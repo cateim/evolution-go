@@ -2,12 +2,16 @@ package send_service
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"image"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/chai2010/webp"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 )
@@ -170,6 +174,25 @@ func TestPrepareLinkPreviewImage_KeepsSizeAndEncodesJPEG(t *testing.T) {
 	assertJPEG(t, prepared.Inline, 72, 36)
 }
 
+// Storefront CDNs serve og:image as WebP; decoding relies on the webp decoder
+// that this package registers in the image package.
+func TestPrepareLinkPreviewImage_AcceptsWebP(t *testing.T) {
+	img, _, err := image.Decode(bytes.NewReader(encodePNG(t, 640, 320)))
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	webpData, err := webp.EncodeRGBA(img, 80)
+	if err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+
+	prepared, err := prepareLinkPreviewImage(webpData)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertJPEG(t, prepared.HighQuality, 640, 320)
+}
+
 func TestPrepareLinkPreviewImage_DownscalesLargeImages(t *testing.T) {
 	prepared, err := prepareLinkPreviewImage(encodePNG(t, 3000, 1500))
 	if err != nil {
@@ -178,6 +201,36 @@ func TestPrepareLinkPreviewImage_DownscalesLargeImages(t *testing.T) {
 	assertJPEG(t, prepared.HighQuality, linkPreviewMaxSide, linkPreviewMaxSide/2)
 	if prepared.Width != linkPreviewMaxSide || prepared.Height != linkPreviewMaxSide/2 {
 		t.Fatalf("expected %dx%d, got %dx%d", linkPreviewMaxSide, linkPreviewMaxSide/2, prepared.Width, prepared.Height)
+	}
+}
+
+// pngDeclaring returns a PNG whose header claims width x height pixels while the
+// file itself stays tiny: the shape of a decompression bomb.
+func pngDeclaring(t *testing.T, width, height uint32) []byte {
+	t.Helper()
+	data := encodePNG(t, 1, 1)
+	binary.BigEndian.PutUint32(data[16:20], width)
+	binary.BigEndian.PutUint32(data[20:24], height)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
+func TestCheckLinkPreviewDimensions_RejectsDecompressionBomb(t *testing.T) {
+	err := checkLinkPreviewDimensions(pngDeclaring(t, 20000, 20000))
+	if err == nil || !strings.Contains(err.Error(), "20000x20000") {
+		t.Fatalf("expected the oversized image to be rejected before decoding, got %v", err)
+	}
+}
+
+func TestCheckLinkPreviewDimensions_AcceptsRegularPhoto(t *testing.T) {
+	if err := checkLinkPreviewDimensions(encodePNG(t, 800, 400)); err != nil {
+		t.Fatalf("expected a regular photo to pass, got %v", err)
+	}
+}
+
+func TestPrepareLinkPreviewImage_RejectsDecompressionBomb(t *testing.T) {
+	if _, err := prepareLinkPreviewImage(pngDeclaring(t, 20000, 20000)); err == nil {
+		t.Fatal("expected the oversized image to be rejected")
 	}
 }
 

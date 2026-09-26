@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chai2010/webp"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"golang.org/x/image/draw"
@@ -35,6 +34,10 @@ const (
 	linkPreviewMaxHTMLBytes  = 4 << 20
 	linkPreviewMaxImageBytes = 8 << 20
 	linkPreviewUploadTimeout = 30 * time.Second
+	// linkPreviewMaxPixels bounds the decoded bitmap (4 bytes per pixel, about
+	// 100 MB at the limit). The byte limit alone does not: a few kilobytes of
+	// compressed image can declare a bitmap of several gigabytes.
+	linkPreviewMaxPixels = 25_000_000
 )
 
 // linkPreviewHTTPClient bounds every preview request: a slow or unresponsive
@@ -140,9 +143,12 @@ func fetchLinkPreviewResource(url string, maxBytes int64) ([]byte, error) {
 // the two sizes WhatsApp uses: the high-quality thumbnail (longest side capped
 // at linkPreviewMaxSide) and the small inline JPEGThumbnail.
 func prepareLinkPreviewImage(raw []byte) (preparedLinkImage, error) {
-	img, err := decodeLinkPreviewImage(raw)
-	if err != nil {
+	if err := checkLinkPreviewDimensions(raw); err != nil {
 		return preparedLinkImage{}, err
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return preparedLinkImage{}, fmt.Errorf("link preview: the image could not be decoded: %w", err)
 	}
 
 	scaled := scaleToMaxSide(img, linkPreviewMaxSide)
@@ -160,17 +166,18 @@ func prepareLinkPreviewImage(raw []byte) (preparedLinkImage, error) {
 	}, nil
 }
 
-// decodeLinkPreviewImage accepts any format registered in the image package
-// plus WebP, which storefront CDNs commonly serve for og:image.
-func decodeLinkPreviewImage(raw []byte) (image.Image, error) {
-	img, _, err := image.Decode(bytes.NewReader(raw))
-	if err == nil {
-		return img, nil
+// checkLinkPreviewDimensions reads only the image header and rejects images
+// whose decoded bitmap would exceed linkPreviewMaxPixels. WebP is covered too:
+// the webp package imported by this service registers its decoder.
+func checkLinkPreviewDimensions(raw []byte) error {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("link preview: the image could not be decoded: %w", err)
 	}
-	if webpImg, webpErr := webp.Decode(bytes.NewReader(raw)); webpErr == nil {
-		return webpImg, nil
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > linkPreviewMaxPixels {
+		return fmt.Errorf("link preview: a %dx%d image exceeds the %d pixel limit", cfg.Width, cfg.Height, linkPreviewMaxPixels)
 	}
-	return nil, fmt.Errorf("link preview: the image could not be decoded: %w", err)
+	return nil
 }
 
 // scaleToMaxSide shrinks img so its longest side is at most maxSide, keeping
