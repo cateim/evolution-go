@@ -403,6 +403,15 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 		}
 	}
 
+	// DeviceProps only travels at pairing. The handshake of an already paired
+	// session sends BaseClientPayload.UserAgent.AppVersion, which only
+	// SetWAVersion changes; without it a paired session keeps whatsmeow's
+	// hardcoded version and gets 405 "client outdated" once WhatsApp retires it.
+	if version.Major != 0 && version.Patch != 0 {
+		store.SetWAVersion(store.WAVersionContainer{uint32(version.Major), uint32(version.Minor), uint32(version.Patch)})
+		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Client payload version set to %s", cd.Instance.Id, store.GetWAVersion().String())
+	}
+
 	// 🔒 FIX: Sempre criar logger, mesmo que WaDebug esteja vazio
 	// Usar "INFO" como nível mínimo para garantir que logs importantes apareçam
 	minLevel := w.config.WaDebug
