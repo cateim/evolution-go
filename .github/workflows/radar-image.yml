@@ -46,3 +46,12 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Tells the radar stack in Portainer to pull this image and recreate evo-go.
+      # Without it the server kept the old image until someone clicked "Pull and
+      # redeploy" (2026-11-07). The stack's GitOps updates need "Re-pull image" and
+      # "Force redeployment" on, since this push does not change the radar repo.
+      - name: Redeploy the radar stack
+        env:
+          PORTAINER_RADAR_WEBHOOK: ${{ secrets.PORTAINER_RADAR_WEBHOOK }}
+        run: curl -fsS -X POST --max-time 60 --retry 2 "$PORTAINER_RADAR_WEBHOOK" -o /dev/null
