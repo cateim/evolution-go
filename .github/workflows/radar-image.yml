@@ -15,6 +15,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      deployments: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,9 +50,16 @@ jobs:
 
       # Tells the radar stack in Portainer to pull this image and recreate evo-go.
       # Without it the server kept the old image until someone clicked "Pull and
-      # redeploy" (2026-11-07). The stack's GitOps updates need "Re-pull image" and
-      # "Force redeployment" on, since this push does not change the radar repo.
+      # redeploy" (2026-11-07). The deployment fires this repo's "deployment"
+      # webhook, which posts to the radar stack webhook. Calling Portainer from the
+      # runner does not work: Cloudflare answers 403 to the runner's IP, while
+      # GitHub's own webhook deliveries get through. The stack's GitOps updates
+      # need "Re-pull image" and "Force redeployment" on, since this push does not
+      # change the radar repo.
       - name: Redeploy the radar stack
         env:
-          PORTAINER_RADAR_WEBHOOK: ${{ secrets.PORTAINER_RADAR_WEBHOOK }}
-        run: curl -fsS -X POST --max-time 60 --retry 2 "$PORTAINER_RADAR_WEBHOOK" -o /dev/null
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/deployments" --input - <<EOF
+          {"ref": "${GITHUB_SHA}", "environment": "radar-vps", "auto_merge": false, "required_contexts": []}
+          EOF
